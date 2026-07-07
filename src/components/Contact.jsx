@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { Send, MapPin, Mail } from 'lucide-react'
 import FadeUp from './FadeUp'
+import { addInquiry } from "../services/firestore";
 
 export default function Contact() {
   const [form, setForm] = useState({ name: '', phone: '', email: '', message: '' })
@@ -11,11 +12,29 @@ export default function Contact() {
     setForm((f) => ({ ...f, [e.target.name]: e.target.value }))
   }
 
-  const handleSubmit = (e) => {
-    e.preventDefault()
-    setSubmitted(true)
-  }
+  const handleSubmit = async (e) => {
+  e.preventDefault();
 
+  try {
+    await addInquiry(form);
+
+    setSubmitted(true);
+
+    setForm({
+      name: "",
+      phone: "",
+      email: "",
+      message: "",
+    });
+
+    setTimeout(() => {
+      setSubmitted(false);
+    }, 3000);
+  } catch (error) {
+    console.error(error);
+    alert("Failed to submit inquiry.");
+  }
+};
   return (
     <section id="contact" className="bg-deepgreen-700 py-24 md:py-32">
       <div className="container-x grid grid-cols-1 gap-16 lg:grid-cols-2">
@@ -42,7 +61,7 @@ export default function Contact() {
                 </p>
 
                 <p className="mt-2 text-base text-white/75">
-                  One World Center, Tower 2, Mumbai 400013
+                  Xion Mall, Hinjewadi Phase 1, Pune 400013
                 </p>
               </div>
             </motion.div>

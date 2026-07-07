@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   Bell,
@@ -17,13 +17,14 @@ import {
 import { useNavigate } from 'react-router-dom'
 import { clearSession, getSession } from '../../lib/auth'
 import {
-  activity as defaultActivity,
-  bookings as defaultBookings,
-  kpis,
-  notifications as defaultNotifications,
-  topCustomers as defaultCustomers,
-  turfs as defaultTurfs,
-} from '../../data/ownerDashboardData'
+  addTurf,
+  updateTurf,
+  deleteTurf,
+  listenOwnerTurfs,
+  listenOwnerBookings,
+  getOwnerEarnings,
+  updateBookingStatus as updateBookingStatusFirestore,
+} from '../../services/firestore'
 import {
   ActivityFeed,
   AiInsights,
@@ -33,7 +34,6 @@ import {
   CustomerInsights,
   EarningsDashboard,
   HeroOverview,
-  KpiCard,
   NotificationCenter,
   ReviewsRatings,
   TurfManagement,
@@ -56,16 +56,26 @@ export default function OwnerDashboard() {
   const navigate = useNavigate()
   const session = getSession()
 
-  const [activeSection, setActiveSection] = useState('overview')
+  const [activeSection, setActiveSection] = useState(
+    localStorage.getItem("owner_active_section") || "overview"
+  )
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [headerQuery, setHeaderQuery] = useState('')
 
-  // Lifted, mutable state so Add/Remove/Search are actually functional
-  const [turfsList, setTurfsList] = useState(defaultTurfs)
-  const [bookingsList, setBookingsList] = useState(defaultBookings)
-  const [customersList, setCustomersList] = useState(defaultCustomers)
-  const [notificationsList, setNotificationsList] = useState(defaultNotifications)
-  const [activityList, setActivityList] = useState(defaultActivity)
+  const [turfsList, setTurfsList] = useState([])
+  const [bookingsList, setBookingsList] = useState([])
+  const [customersList, setCustomersList] = useState([])
+  const [notificationsList, setNotificationsList] = useState([])
+  const [activityList, setActivityList] = useState([])
+  const [earnings, setEarnings] = useState(0)
+
+  useEffect(() => {
+    const saved = localStorage.getItem("owner_active_section");
+
+    if (saved) {
+      setActiveSection(saved);
+    }
+  }, []);
 
   function logActivity(message) {
     setActivityList((prev) => [message, ...prev].slice(0, 12))
@@ -73,43 +83,67 @@ export default function OwnerDashboard() {
 
   function handleLogout() {
     clearSession()
-    navigate('/login')
+    navigate('/login', { replace: true })
   }
 
   function goTo(sectionId) {
     setActiveSection(sectionId)
+    localStorage.setItem("owner_active_section", sectionId)
     setMobileNavOpen(false)
   }
 
-  // ---- Turf CRUD ----
-  function addTurf(turf) {
-    const newTurf = {
-      id: Date.now(),
-      occupancy: 0,
-      status: 'Active',
-      image: '/images/football.jpg',
-      ...turf,
+  useEffect(() => {
+    if (!session?.uid) return
+
+    const unsubscribeTurfs = listenOwnerTurfs(session.uid, (data) => {
+      setTurfsList(data)
+    })
+
+    const unsubscribeBookings = listenOwnerBookings(session.uid, (data) => {
+      setBookingsList(data)
+    })
+
+    async function loadEarnings() {
+      const data = await getOwnerEarnings(session.uid)
+      setEarnings(data)
     }
-    setTurfsList((prev) => [newTurf, ...prev])
-    logActivity(`Added new turf: ${newTurf.name}`)
+
+    loadEarnings()
+
+    return () => {
+      unsubscribeTurfs()
+      unsubscribeBookings()
+    }
+  }, [session])
+
+  async function handleAddTurf(turf) {
+    await addTurf({
+      ...turf,
+      ownerId: session.uid,
+    })
+    logActivity(`Added new turf: ${turf.name}`)
   }
 
-  function removeTurf(id) {
+  async function removeTurf(id) {
     const turf = turfsList.find((t) => t.id === id)
-    setTurfsList((prev) => prev.filter((t) => t.id !== id))
+    await deleteTurf(id)
     if (turf) logActivity(`Removed turf: ${turf.name}`)
   }
 
-  // ---- Booking actions ----
-  function updateBookingStatus(id, status) {
-    setBookingsList((prev) =>
-      prev.map((b) => (b.id === id ? { ...b, status } : b)),
-    )
-    const booking = bookingsList.find((b) => b.id === id)
-    if (booking) logActivity(`Booking ${status.toLowerCase()} for ${booking.customer}`)
+  async function editTurf(id, updates) {
+    await updateTurf(id, updates)
+    logActivity(`Updated turf: ${updates.name || turfsList.find((t) => t.id === id)?.name}`)
   }
 
-  // ---- Customer CRUD ----
+  async function updateBookingStatus(id, status) {
+    await updateBookingStatusFirestore(id, status)
+
+    const booking = bookingsList.find((b) => b.id === id)
+    if (booking) {
+      logActivity(`Booking ${status.toLowerCase()} for ${booking.customer || booking.userName}`)
+    }
+  }
+
   function addCustomer(customer) {
     const newCustomer = { bookings: 0, spend: 'Rs. 0', ...customer }
     setCustomersList((prev) => [newCustomer, ...prev])
@@ -125,14 +159,20 @@ export default function OwnerDashboard() {
     setNotificationsList((prev) => prev.filter((n) => n.title !== title))
   }
 
-  // ---- Global header search -> jumps to the right section ----
   const headerResults = useMemo(() => {
     if (!headerQuery.trim()) return []
     const q = headerQuery.toLowerCase()
     const matches = []
 
     turfsList.forEach((t) => {
-      if (t.name.toLowerCase().includes(q) || t.sport.toLowerCase().includes(q)) {
+      if (
+        t.name.toLowerCase().includes(q) ||
+        t.sports
+          ?.map((s) => s.name)
+          .join(' ')
+          .toLowerCase()
+          .includes(q)
+      ) {
         matches.push({ type: 'Turf', label: t.name, section: 'turfs' })
       }
     })
@@ -150,29 +190,68 @@ export default function OwnerDashboard() {
     return matches.slice(0, 6)
   }, [headerQuery, turfsList, bookingsList, customersList])
 
+  const dashboardStats = useMemo(() => {
+    const totalRevenue = Number(earnings || 0)
+
+    const pendingBookings = bookingsList.filter(
+      (b) => b.status === 'Pending'
+    ).length
+
+    const confirmedBookings = bookingsList.filter(
+      (b) => b.status === 'Confirmed'
+    ).length
+
+    return [
+      {
+        label: 'Turfs',
+        value: turfsList.length,
+      },
+      {
+        label: 'Bookings',
+        value: bookingsList.length,
+      },
+      {
+        label: 'Pending',
+        value: pendingBookings,
+      },
+      {
+        label: 'Confirmed',
+        value: confirmedBookings,
+      },
+      {
+        label: 'Customers',
+        value: customersList.length,
+      },
+      {
+        label: 'Revenue',
+        value: `₹${totalRevenue}`,
+      },
+    ]
+  }, [turfsList, bookingsList, customersList, earnings])
+
   return (
-    <div className="min-h-screen bg-[#03110d] text-offwhite">
-      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_right,rgba(45,212,191,0.16),transparent_34%),radial-gradient(circle_at_20%_15%,rgba(52,211,153,0.14),transparent_28%)]" />
+    <div className="min-h-screen bg-white text-emerald-950">
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.10),transparent_34%),radial-gradient(circle_at_20%_15%,rgba(110,231,183,0.14),transparent_28%)]" />
 
       <div className="relative mx-auto flex max-w-[1600px]">
         {/* Sidebar */}
-        <aside className="sticky top-0 hidden h-screen w-72 border-r border-white/10 bg-white/[0.035] p-5 backdrop-blur-xl xl:block">
-          <div className="mb-10">
-            <p className="font-display text-2xl font-bold text-white">
-              BookMy<span className="text-emerald-300">Turf</span>
+        <aside className="sticky top-0 hidden h-screen w-72 flex-col border-r border-emerald-100 bg-emerald-50/60 p-5 backdrop-blur-xl xl:flex">
+          <div className="mb-10 shrink-0">
+            <p className="font-display text-2xl font-bold text-emerald-900">
+              BookMy<span className="text-emerald-500">Turf</span>
             </p>
-            <p className="mt-2 text-sm text-white/45">Owner platform</p>
+            <p className="mt-2 text-sm text-emerald-700/60">Owner platform</p>
           </div>
 
-          <nav className="space-y-2">
+          <nav className="flex-1 space-y-2 overflow-y-auto pb-6 pr-1">
             {NAV_ITEMS.map((item) => (
               <button
                 key={item.id}
                 onClick={() => goTo(item.id)}
                 className={`flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-semibold transition ${
                   activeSection === item.id
-                    ? 'bg-emerald-300 text-deepgreen-700'
-                    : 'text-white/60 hover:bg-white/[0.05] hover:text-white'
+                    ? 'bg-emerald-400 text-white'
+                    : 'text-emerald-700/70 hover:bg-emerald-100 hover:text-emerald-900'
                 }`}
               >
                 <item.icon size={17} />
@@ -189,7 +268,7 @@ export default function OwnerDashboard() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed inset-0 z-40 bg-black/60 xl:hidden"
+              className="fixed inset-0 z-40 bg-emerald-950/40 xl:hidden"
               onClick={() => setMobileNavOpen(false)}
             >
               <motion.aside
@@ -197,26 +276,26 @@ export default function OwnerDashboard() {
                 animate={{ x: 0 }}
                 exit={{ x: -280 }}
                 transition={{ duration: 0.3, ease: 'easeOut' }}
-                className="h-full w-72 border-r border-white/10 bg-[#03110d] p-5"
+                className="flex h-full w-72 flex-col border-r border-emerald-100 bg-white p-5"
                 onClick={(e) => e.stopPropagation()}
               >
-                <div className="mb-8 flex items-center justify-between">
-                  <p className="font-display text-xl font-bold text-white">
-                    BookMy<span className="text-emerald-300">Turf</span>
+                <div className="mb-8 flex shrink-0 items-center justify-between">
+                  <p className="font-display text-xl font-bold text-emerald-900">
+                    BookMy<span className="text-emerald-500">Turf</span>
                   </p>
-                  <button onClick={() => setMobileNavOpen(false)} className="text-white/60">
+                  <button onClick={() => setMobileNavOpen(false)} className="text-emerald-700/70">
                     <X size={20} />
                   </button>
                 </div>
-                <nav className="space-y-2">
+                <nav className="flex-1 space-y-2 overflow-y-auto pb-6 pr-1">
                   {NAV_ITEMS.map((item) => (
                     <button
                       key={item.id}
                       onClick={() => goTo(item.id)}
                       className={`flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-semibold transition ${
                         activeSection === item.id
-                          ? 'bg-emerald-300 text-deepgreen-700'
-                          : 'text-white/60 hover:bg-white/[0.05] hover:text-white'
+                          ? 'bg-emerald-400 text-white'
+                          : 'text-emerald-700/70 hover:bg-emerald-100 hover:text-emerald-900'
                       }`}
                     >
                       <item.icon size={17} />
@@ -230,34 +309,34 @@ export default function OwnerDashboard() {
         </AnimatePresence>
 
         <main className="min-w-0 flex-1 px-4 py-5 md:px-8 lg:px-10">
-          <header className="mb-6 flex flex-col gap-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4 backdrop-blur-xl md:flex-row md:items-center md:justify-between">
+          <header className="mb-6 flex flex-col gap-4 rounded-2xl border border-emerald-100 bg-emerald-50/60 p-4 backdrop-blur-xl md:flex-row md:items-center md:justify-between">
             <div className="flex items-center gap-3">
               <button
                 onClick={() => setMobileNavOpen(true)}
-                className="rounded-xl border border-white/10 bg-white/[0.04] p-2 text-white xl:hidden"
+                className="rounded-xl border border-emerald-100 bg-white p-2 text-emerald-700 xl:hidden"
               >
                 <Menu size={20} />
               </button>
               <div>
-                <p className="text-sm text-white/45">Welcome back</p>
-                <h2 className="text-xl font-semibold text-white">{session?.name || 'Turf Owner'}</h2>
+                <p className="text-sm text-emerald-700/60">Welcome back</p>
+                <h2 className="text-xl font-semibold text-emerald-900">{session?.name || 'Turf Owner'}</h2>
               </div>
             </div>
 
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               <div className="relative min-w-0 md:min-w-[320px]">
-                <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white/50">
+                <label className="flex items-center gap-3 rounded-2xl border border-emerald-100 bg-white px-4 py-3 text-emerald-700/60">
                   <Search size={18} />
                   <input
                     value={headerQuery}
                     onChange={(e) => setHeaderQuery(e.target.value)}
                     placeholder="Search bookings, turfs, customers"
-                    className="w-full bg-transparent text-sm text-white outline-none placeholder:text-white/35"
+                    className="w-full bg-transparent text-sm text-emerald-900 outline-none placeholder:text-emerald-700/35"
                   />
                 </label>
 
                 {headerResults.length > 0 && (
-                  <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-30 overflow-hidden rounded-2xl border border-white/10 bg-[#06201a] shadow-2xl">
+                  <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-30 overflow-hidden rounded-2xl border border-emerald-100 bg-white shadow-2xl">
                     {headerResults.map((r) => (
                       <button
                         key={`${r.type}-${r.label}`}
@@ -265,10 +344,10 @@ export default function OwnerDashboard() {
                           goTo(r.section)
                           setHeaderQuery('')
                         }}
-                        className="flex w-full items-center justify-between px-4 py-3 text-left text-sm text-white/75 hover:bg-white/[0.06]"
+                        className="flex w-full items-center justify-between px-4 py-3 text-left text-sm text-emerald-800 hover:bg-emerald-50"
                       >
                         <span>{r.label}</span>
-                        <span className="text-xs uppercase tracking-widest2 text-emerald-300/70">{r.type}</span>
+                        <span className="text-xs uppercase tracking-widest2 text-emerald-500/80">{r.type}</span>
                       </button>
                     ))}
                   </div>
@@ -277,7 +356,7 @@ export default function OwnerDashboard() {
 
               <button
                 onClick={handleLogout}
-                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-300 px-5 py-3 text-sm font-bold text-deepgreen-700 transition hover:bg-white"
+                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-400 px-5 py-3 text-sm font-bold text-white transition hover:bg-emerald-500"
               >
                 <LogOut size={17} />
                 Logout
@@ -296,9 +375,19 @@ export default function OwnerDashboard() {
               {activeSection === 'overview' && (
                 <div className="space-y-6">
                   <HeroOverview onAction={goTo} />
-                  <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-                    {kpis.map((item, index) => (
-                      <KpiCard key={item.label} item={item} index={index} />
+                  <section className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+                    {dashboardStats.map((item) => (
+                      <div
+                        key={item.label}
+                        className="rounded-3xl bg-white p-6 shadow-sm"
+                      >
+                        <p className="text-sm text-slate-500">
+                          {item.label}
+                        </p>
+                        <h2 className="mt-3 text-4xl font-bold text-emerald-600">
+                          {item.value}
+                        </h2>
+                      </div>
                     ))}
                   </section>
                 </div>
@@ -307,16 +396,32 @@ export default function OwnerDashboard() {
               {activeSection === 'analytics' && <AnalyticsSection />}
 
               {activeSection === 'turfs' && (
-                <TurfManagement turfs={turfsList} onAdd={addTurf} onRemove={removeTurf} />
+                <TurfManagement
+                  turfs={turfsList}
+                  onAdd={handleAddTurf}
+                  onRemove={removeTurf}
+                  onEdit={editTurf}
+                />
               )}
 
               {activeSection === 'bookings' && (
-                <BookingManagement bookings={bookingsList} onUpdateStatus={updateBookingStatus} />
+  <BookingManagement
+    bookings={bookingsList}
+    onStatusChange={updateBookingStatus}
+    key={bookingsList.length}
+  />
+)}
+
+             {activeSection === 'calendar' && (
+  <CalendarView bookings={bookingsList} />
+)}
+
+              {activeSection === 'earnings' && (
+                <EarningsDashboard
+                  earnings={earnings}
+                  bookings={bookingsList}
+                />
               )}
-
-              {activeSection === 'calendar' && <CalendarView />}
-
-              {activeSection === 'earnings' && <EarningsDashboard />}
 
               {activeSection === 'customers' && (
                 <CustomerInsights

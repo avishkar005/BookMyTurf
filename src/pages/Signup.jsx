@@ -12,7 +12,7 @@ export default function Signup() {
     setForm({ ...form, [event.target.name]: event.target.value })
   }
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault()
     setError('')
 
@@ -21,7 +21,7 @@ export default function Signup() {
       return
     }
 
-    const result = registerUser(form)
+    const result = await registerUser(form)
 
     if (!result.ok) {
       setError(result.message)
@@ -108,12 +108,18 @@ export default function Signup() {
 
         <p className="mt-6 text-center text-sm text-white/60">
           Already have an account?{' '}
-          <Link to="/login" className="font-semibold text-emerald-300 hover:text-white">
+          <Link
+            to="/login"
+            className="font-semibold text-emerald-300 hover:text-white"
+          >
             Login
           </Link>
         </p>
 
-        <Link to="/" className="mt-6 block text-center text-sm text-white/40 hover:text-white">
+        <Link
+          to="/"
+          className="mt-6 block text-center text-sm text-white/40 hover:text-white"
+        >
           Back to Home
         </Link>
       </motion.div>

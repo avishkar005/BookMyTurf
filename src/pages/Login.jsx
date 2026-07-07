@@ -15,7 +15,7 @@ export default function Login() {
     setForm({ ...form, [event.target.name]: event.target.value })
   }
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault()
     setError('')
 
@@ -26,15 +26,16 @@ export default function Login() {
 
     if (isOwnerLogin(form.email, form.password)) {
       createSession({
+        uid: 'owner-bookmyturf',
         name: 'Turf Owner',
         email: form.email.trim().toLowerCase(),
         role: 'owner',
       })
-      navigate('/owner-dashboard')
+      navigate('/owner-dashboard', { replace: true })
       return
     }
 
-    const user = findUser(form.email, form.password)
+    const user = await findUser(form.email, form.password)
 
     if (!user) {
       setError('Invalid credentials. Please register first or check your password.')
@@ -42,7 +43,7 @@ export default function Login() {
     }
 
     createSession(user)
-    navigate('/user-dashboard')
+    navigate('/user-dashboard', { replace: true })
   }
 
   return (
@@ -112,12 +113,18 @@ export default function Login() {
 
         <p className="mt-6 text-center text-sm text-white/60">
           Don't have an account?{' '}
-          <Link to="/signup" className="font-semibold text-emerald-300 hover:text-white">
+          <Link
+            to="/signup"
+            className="font-semibold text-emerald-300 hover:text-white"
+          >
             Sign Up
           </Link>
         </p>
 
-        <Link to="/" className="mt-6 block text-center text-sm text-white/40 hover:text-white">
+        <Link
+          to="/"
+          className="mt-6 block text-center text-sm text-white/40 hover:text-white"
+        >
           Back to Home
         </Link>
       </motion.div>
